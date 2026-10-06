@@ -96,6 +96,12 @@ class ModelList(BaseModel):
     data: List[ModelCard] = Field(default_factory=list)
 
 
+'''
+前端 API 服务器的核心管理器，
+负责管理每个用户请求（uid）、通过 ZMQ 和 tokenizer 进程收发消息、
+并把 tokenizer 返回的结果以流式（SSE）方式回传给 HTTP 客户端
+
+'''
 @dataclass
 class FrontendManager:
     config: ServerArgs
@@ -407,7 +413,12 @@ async def shell():
         for child in parent.children(recursive=True):
             child.kill()
 
+"""
+run_api_server 是前端 API 服务器（FastAPI + uvicorn）的启动函数，
+负责：初始化全局状态、通过 ZMQ 连接 tokenizer 进程、启动后端 worker，
+然后进入服务循环（HTTP 服务器或交互式 shell）。
 
+"""
 def run_api_server(config: ServerArgs, start_backend: Callable[[], None], run_shell: bool) -> None:
     """
     Run the frontend API server (FastAPI + uvicorn) and wire it to the tokenizer process via ZMQ.
@@ -442,7 +453,7 @@ def run_api_server(config: ServerArgs, start_backend: Callable[[], None], run_sh
         ),
     )
 
-    # start the backend here
+    # start the backend here，执行启动对应的子进程（TP schedulers + tokenizer/detokenizer）
     start_backend()
 
     logger.info(f"API server is ready to serve on {host}:{port}")

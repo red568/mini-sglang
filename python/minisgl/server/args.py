@@ -10,7 +10,8 @@ from minisgl.distributed import DistributedInfo
 from minisgl.scheduler import SchedulerConfig
 from minisgl.utils import init_logger
 
-
+# frozen=True 表示这个类的实例创建后不可变（immutable）
+# frozen=True 只阻止重新赋值字段，不是深度不可变：如果字段是可变对象（如 List、dict），你仍然可以修改它的内容（比如 cfg.cuda_graph_bs.append(1)），只是不能把字段整体替换成另一个对象
 @dataclass(frozen=True)
 class ServerArgs(SchedulerConfig):
     server_host: str = "127.0.0.1"
@@ -53,6 +54,7 @@ class ServerArgs(SchedulerConfig):
 
 def parse_args(args: List[str], run_shell: bool = False) -> Tuple[ServerArgs, bool]:
     """
+    把cli命令中的config参数解析为EngineConfig对象，方便后续使用。
     Parse command line arguments and return an EngineConfig.
 
     Args:
@@ -68,8 +70,8 @@ def parse_args(args: List[str], run_shell: bool = False) -> Tuple[ServerArgs, bo
     parser = argparse.ArgumentParser(description="MiniSGL Server Arguments")
 
     parser.add_argument(
-        "--model-path",
-        "--model",
+        "--model-path", # 长名字
+        "--model", # 别名
         type=str,
         required=True,
         help="The path of the model weights. This can be a local folder or a Hugging Face repo ID.",
@@ -226,16 +228,19 @@ def parse_args(args: List[str], run_shell: bool = False) -> Tuple[ServerArgs, bo
     # Parse arguments
     kwargs = parser.parse_args(args).__dict__.copy()
 
-    # resolve some arguments
+    # 取出shell_mode参数，并更新run_shell变量，并删除kwargs中的shell_mode键值对
+    # 做或操作
     run_shell |= kwargs.pop("shell_mode")
     if run_shell:
         kwargs["cuda_graph_max_bs"] = 1
         kwargs["max_running_req"] = 1
         kwargs["silent_output"] = True
 
+    # 把模型路径里的 ~ 展开成用户主目录的绝对路径。
     if kwargs["model_path"].startswith("~"):
         kwargs["model_path"] = os.path.expanduser(kwargs["model_path"])
 
+    # 如果模型来源是modelscope，并且模型路径不是本地目录，则使用modelscope的snapshot_download函数下载模型到本地，并更新kwargs中的model_path键值对。
     if kwargs["model_source"] == "modelscope":
         model_path = kwargs["model_path"]
         if not os.path.isdir(model_path):
