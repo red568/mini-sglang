@@ -5,10 +5,14 @@ from minisgl.message import DetokenizeMsg
 from transformers import PreTrainedTokenizerBase
 
 # Borrowed from sglang
-
+"""
+这段代码是流式推理的增量解码器(incremental detokenizer),
+核心要解决的问题是:模型每次吐出一个 token,但单个 token 可能只对应半个多字节字符(比如半个 emoji),
+直接解码会产生 � 乱码。所以需要"攒够"再输出,同时每个请求(uid)要记住自己的状态。
+"""
 
 def _is_chinese_char(cp: int):
-    """Checks whether CP is the codepoint of a CJK character."""
+    """判断码点是否是 CJK 汉字。因为中文没有空格分词,不需要等空格边界,可以直接输出。"""
     # This defines a "chinese character" as anything in the CJK Unicode block:
     #   https://en.wikipedia.org/wiki/CJK_Unified_Ideographs_(Unicode_block)
     #
@@ -31,7 +35,14 @@ def _is_chinese_char(cp: int):
 
     return False
 
+"""
+返回当前文本中"能安全输出"的最长前缀(避免输出半个词):
 
+以 \n 结尾 → 整个输出(换行是天然边界)
+最后一个字符是汉字 → 整个输出(汉字之间不需要空格)
+倒数第二个字符是汉字 → 输出到倒数第二个(最后那个拉丁字符可能是半个词,先留着)
+其他情况 → 截断到最后一个空格之后(不输出半个英文单词)
+"""
 def find_printable_text(text: str):
     """Returns the longest printable substring of text that contains only entire words."""
     # Borrowed from https://github.com/huggingface/transformers/blob/061580c82c2db1de9139528243e105953793f7a2/src/transformers/generation/streamers.py#L99
@@ -53,8 +64,8 @@ def find_printable_text(text: str):
 
 @dataclass
 class DecodeStatus:
-    decoded_ids: List[int]
-    decoded_str: str
+    decoded_ids: List[int] #到目前为止收到的所有 token id
+    decoded_str: str    #已经确认稳定并累积的文本
     read_offset: int  # length of read ids
     surr_offset: int  # length of surr ids
     sent_offset: int  # length of sent out string

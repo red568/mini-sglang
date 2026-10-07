@@ -15,7 +15,8 @@ class TokenizeManager:
         results: List[torch.Tensor] = []
         # TODO: batch tokenization
 
-        # 这里的逻辑是：如果 msg.text 是一个 list，说明它是一个聊天消息的列表，需要先应用聊天模板（apply_chat_template）把它们拼接成一个完整的 prompt，然后再进行编码。
+        # 兼容两种文本输入方式：
+        # 如果 msg.text 是一个 list，说明它是一个聊天消息的列表，需要先应用聊天模板（apply_chat_template）把它们拼接成一个完整的 prompt，然后再进行编码。
         # 如果 msg.text 是一个字符串，就直接使用它作为 prompt。
         for msg in msgs:
             if isinstance(msg.text, list):
@@ -27,6 +28,8 @@ class TokenizeManager:
                 assert isinstance(prompt, str)
             else:
                 prompt = msg.text
+            
+            # 真实tokenization过程，使用tokenizer.encode将prompt编码为input_ids，并将其转换为torch.Tensor类型。
             input_ids: torch.Tensor = (  # type: ignore
                 self.tokenizer.encode(prompt, return_tensors="pt")
             )
