@@ -28,11 +28,14 @@ class BatchBackendMsg(BaseBackendMsg):
 class ExitMsg(BaseBackendMsg):
     pass
 
-
+"""
+API Server ──TokenizeMsg(text)──► tokenizer ──UserMsg(input_ids)──► Scheduler
+将经过tokenize的input_ids发给Scheduler，Scheduler再发给模型进行推理。
+"""
 @dataclass
 class UserMsg(BaseBackendMsg):
     uid: int
-    input_ids: torch.Tensor  # CPU 1D int32 tensor
+    input_ids: torch.Tensor  # CPU 1D int32 tensor,经过tokenize后的输入id 
     sampling_params: SamplingParams
 
 

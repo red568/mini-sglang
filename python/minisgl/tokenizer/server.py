@@ -27,6 +27,10 @@ def _unwrap_msg(msg: BaseTokenizerMsg) -> List[BaseTokenizerMsg]:
     return [msg]
 
 
+"""
+tokenize_worker,提供tokenize和detokenize服务，
+接收来自API Server的TokenizeMsg和DetokenizeMsg，返回UserMsg和UserReply。
+"""
 @torch.inference_mode()
 def tokenize_worker(
     *,

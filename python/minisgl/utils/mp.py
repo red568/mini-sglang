@@ -18,11 +18,14 @@ class ZmqPushQueue(Generic[T]):
     ):
         self.context = zmq.Context()
         self.socket = self.context.socket(zmq.PUSH)
+        # 通过 create 参数决定是绑定（bind）还是连接（connect）ZMQ socket
         self.socket.bind(addr) if create else self.socket.connect(addr)
-        self.encoder = encoder
+        self.encoder = encoder # 编码器，把对象T编码成字典Dict，方便序列化传输
 
     def put(self, obj: T):
+        # 把对象T编码成字典Dict，再序列化成二进制数据，发送到ZMQ socket
         event = msgpack.packb(self.encoder(obj), use_bin_type=True)
+        # copy=False表示不复制数据，直接发送，提高性能
         self.socket.send(event, copy=False)
 
     def stop(self):
@@ -37,6 +40,7 @@ class ZmqAsyncPushQueue(Generic[T]):
         create: bool,
         encoder: Callable[[T], Dict],
     ):
+        # 对于异步场景，使用 zmq.asyncio.Context() 创建上下文
         self.context = zmq.asyncio.Context()
         self.socket = self.context.socket(zmq.PUSH)
         self.socket.bind(addr) if create else self.socket.connect(addr)
@@ -61,11 +65,14 @@ class ZmqPullQueue(Generic[T]):
         self.context = zmq.Context()
         self.socket = self.context.socket(zmq.PULL)
         self.socket.bind(addr) if create else self.socket.connect(addr)
-        self.decoder = decoder
+        self.decoder = decoder # 解码器，把接收到的字典Dict解码成对象T，方便后续处理
 
     def get(self) -> T:
         event = self.socket.recv()
+        # 先反序列化成字典，再用解码器把字典转换成对象T
         return self.decoder(msgpack.unpackb(event, raw=False))
+
+    # 也可以直接获取原始的二进制数据，方便自定义处理，通常用于转发，解决编码解码消耗
 
     def get_raw(self) -> bytes:
         return self.socket.recv()

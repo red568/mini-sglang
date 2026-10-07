@@ -11,7 +11,9 @@ from minisgl.utils import cached_load_hf_config
 if TYPE_CHECKING:
     from minisgl.models import ModelConfig
 
-
+"""
+是「一个 TP worker 的引擎」需要的所有配置。
+"""
 @dataclass(frozen=True)
 class EngineConfig:
     model_path: str
@@ -30,10 +32,19 @@ class EngineConfig:
     max_seq_len_override: int | None = None
     num_page_override: int | None = None  # if not None, will override the number of pages
 
+
+    """
+    @cached_property：只执行一次，之后返回缓存值。适合计算开销大、结果不变的场景。
+    加载 HuggingFace 的 PretrainedConfig（读 JSON/下载，慢）
+    """
     @cached_property
-    def hf_config(self):
+    def hf_config(self): 
         return cached_load_hf_config(self.model_path)
 
+    """
+    转成项目自己的 ModelConfig
+    ModelConfig.from_hf 做的是「字段翻译」：把 HF 里各种命名不统一的字段，统一成项目需要的固定字段
+    """
     @cached_property
     def model_config(self) -> ModelConfig:
         from minisgl.models import ModelConfig

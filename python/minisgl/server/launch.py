@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 
 """
 scheduler 进程的启动函数，负责启动一个 minisgl.scheduler.Scheduler 对象，并进入调度循环。
+每个rank自己启动一个进程，管理自己的资源（含模型、KV cache、GPU 资源）
 """
 def _run_scheduler(args: ServerArgs, ack_queue: mp.Queue[str]) -> None:
     import torch
@@ -123,6 +124,7 @@ def launch_server(run_shell: bool = False) -> None:
         for _ in range(num_tokenizers + 2):
             logger.info(ack_queue.get())
 
+    # 为什么start_subprocess要传入api server中进行回调，因为zmq启动需要顺序，需要先binding
     run_api_server(server_args, start_subprocess, run_shell=run_shell)
 
 

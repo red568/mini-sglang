@@ -38,7 +38,8 @@ def get_global_state() -> FrontendManager:
     assert _GLOBAL_STATE is not None, "Global state is not initialized"
     return _GLOBAL_STATE
 
-
+# 把后端（detokenizer）发过来的消息统一拆成一维的 UserReply 列表，因为后端可能发两种形态，
+# 而 listen() 需要按单条 UserReply 逐个按 uid 分拣。
 def _unwrap_msg(msg: BaseFrontendMsg) -> List[UserReply]:
     if isinstance(msg, BatchFrontendMsg):
         result = []
@@ -100,18 +101,21 @@ class ModelList(BaseModel):
 前端 API 服务器的核心管理器，
 负责管理每个用户请求（uid）、通过 ZMQ 和 tokenizer 进程收发消息、
 并把 tokenizer 返回的结果以流式（SSE）方式回传给 HTTP 客户端
-
 '''
 @dataclass
 class FrontendManager:
-    config: ServerArgs
-    send_tokenizer: ZmqAsyncPushQueue[BaseTokenizerMsg]
-    recv_tokenizer: ZmqAsyncPullQueue[BaseFrontendMsg]
+    config: ServerArgs # 配置参数
+    send_tokenizer: ZmqAsyncPushQueue[BaseTokenizerMsg] # 送去tokenizer进程的消息队列
+    recv_tokenizer: ZmqAsyncPullQueue[BaseFrontendMsg] # 生成的文本
     uid_counter: int = 0
     initialized: bool = False
-    ack_map: Dict[int, List[UserReply]] = field(default_factory=dict)
-    event_map: Dict[int, asyncio.Event] = field(default_factory=dict)
+    # key：int —— 请求的 uid（new_user() 里自增分配的唯一标识）。
+    # value：List[UserReply] —— 这个 uid 攒到的所有回复（一个列表）。
+    ack_map: Dict[int, List[UserReply]] = field(default_factory=dict) # uid → 攒到的回复
+    event_map: Dict[int, asyncio.Event] = field(default_factory=dict)  # uid → 唤醒事件，相当于响铃
 
+
+    # 分配新uid
     def new_user(self) -> int:
         uid = self.uid_counter
         self.uid_counter += 1
@@ -119,42 +123,48 @@ class FrontendManager:
         self.event_map[uid] = asyncio.Event()
         return uid
 
+    # 监听器，发送消息的同时打开的
     async def listen(self):
         while True:
             msg = await self.recv_tokenizer.get()
             for msg in _unwrap_msg(msg):
                 if msg.uid not in self.ack_map:
                     continue
-                self.ack_map[msg.uid].append(msg)
-                self.event_map[msg.uid].set()
+                self.ack_map[msg.uid].append(msg) # 存储消息
+                self.event_map[msg.uid].set() # 唤醒等待这个 uid 的协程，告诉它有新的 ack 到来，拉响闹铃
 
     def _create_listener_once(self):
         if not self.initialized:
             asyncio.create_task(self.listen())
             self.initialized = True
 
+    # 消息发送给tokenizer进程，并启动监听器（listen()）来接收tokenizer的回复
     async def send_one(self, msg: BaseTokenizerMsg):
         self._create_listener_once()
         await self.send_tokenizer.put(msg)
 
+    # 等待ack
     async def wait_for_ack(self, uid: int):
+        # 取出uid对应的事件对象，等待事件被触发（即有新的ack到来）
+        # 拿出响铃
         event = self.event_map[uid]
 
         while True:
-            await event.wait()
-            event.clear()
+            await event.wait() # 等待响铃被敲响
+            event.clear() # 铃被敲响后，清除事件状态，准备下一次等待
 
-            pending = self.ack_map[uid]
-            self.ack_map[uid] = []
+            pending = self.ack_map[uid] #取出信息
+            self.ack_map[uid] = [] #清空信息，等下一次新的信息
             ack = None
             for ack in pending:
-                yield ack
+                yield ack #  一条条 yield 出去
             if ack and ack.finished:
                 break
 
         del self.ack_map[uid]
         del self.event_map[uid]
 
+    # 出口
     async def stream_generate(self, uid: int):
         async for ack in self.wait_for_ack(uid):
             yield f"data: {ack.incremental_output}\n".encode()
@@ -234,8 +244,11 @@ app = FastAPI(title="MiniSGL API Server", version="0.0.1", lifespan=lifespan)
 @app.post("/generate")
 async def generate(req: GenerateRequest, request: Request):
     logger.debug("Received generate request %s", req)
+    # 拿到FrontendManager
     state = get_global_state()
+    # 分配新uid
     uid = state.new_user()
+    # 发送TokenizeMsg给tokenizer进程
     await state.send_one(
         TokenizeMsg(
             uid=uid,
@@ -246,7 +259,8 @@ async def generate(req: GenerateRequest, request: Request):
             ),
         )
     )
-
+    # 如果请求是流式的，返回StreamingResponse，流式返回tokenizer的输出
+    # 如果请求是非流式的，收集所有的ack，返回一个完整
     return StreamingResponse(
         state.stream_with_cancellation(state.stream_generate(uid), request, uid),
         media_type="text/event-stream",
@@ -438,12 +452,15 @@ def run_api_server(config: ServerArgs, start_backend: Callable[[], None], run_sh
     host = config.server_host
     port = config.server_port
 
+
+    # FrontendManager是前端 API 服务器的核心管理器，负责管理每个用户请求（uid）、通过 ZMQ 和 tokenizer 进程收发消息、并把 tokenizer 返回的结果以流式（SSE）方式回传给 HTTP 客户端
+    # 全局变量且唯一
     assert _GLOBAL_STATE is None, "Global state is already initialized"
     _GLOBAL_STATE = FrontendManager(
         config=config,
         recv_tokenizer=ZmqAsyncPullQueue(
             config.zmq_frontend_addr,
-            create=True,
+            create=True, #bind zmq
             decoder=BaseFrontendMsg.decoder,
         ),
         send_tokenizer=ZmqAsyncPushQueue(

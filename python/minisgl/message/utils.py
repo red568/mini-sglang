@@ -5,7 +5,7 @@ from typing import Any, Dict, Type
 import numpy as np
 import torch
 
-
+# 递归处理任意字段值
 def _serialize_any(value: Any) -> Any:
     if isinstance(value, dict):
         return {k: _serialize_any(v) for k, v in value.items()}
@@ -17,6 +17,7 @@ def _serialize_any(value: Any) -> Any:
         return serialize_type(value)
 
 
+# 序列化对象为字典，方便传输和存储
 def serialize_type(self) -> Dict:
     # find all member variables
     serialized = {}
@@ -30,6 +31,7 @@ def serialize_type(self) -> Dict:
 
     # normal type
     serialized["__type__"] = self.__class__.__name__
+    # 遍历对象的所有属性，将其序列化为字典
     for k, v in self.__dict__.items():
         serialized[k] = _serialize_any(v)
     return serialized
@@ -48,7 +50,7 @@ def _deserialize_any(cls_map: Dict[str, Type], data: Any) -> Any:
     else:
         raise ValueError(f"Cannot deserialize type {type(data)}")
 
-
+# 反序列化字典为对象，方便后续处理
 def deserialize_type(cls_map: Dict[str, Type], data: Dict) -> Any:
     type_name = data["__type__"]
     # we can only serialize 1D tensor for now
