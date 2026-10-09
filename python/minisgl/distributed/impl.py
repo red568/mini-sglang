@@ -1,3 +1,13 @@
+"""分布式集合通信的实现层。
+
+提供统一的 `DistributedCommunicator` 门面，底层支持两种实现（插件）：
+- `TorchDistributedImpl`：基于 `torch.distributed` 的 all_reduce/all_gather。
+- `PyNCCLDistributedImpl`：基于自定义 PyNCCL 内核，性能更优。
+
+`DistributedCommunicator.plugins` 是一个插件栈，通信时取栈顶实现；
+`enable_pynccl_distributed` 会把 PyNCCL 实现压栈以启用。
+"""
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
@@ -14,6 +24,8 @@ if TYPE_CHECKING:
 
 @dataclass
 class DistributedImpl(ABC):
+    """集合通信实现的抽象接口。"""
+
     @abstractmethod
     def all_reduce(self, x: torch.Tensor) -> torch.Tensor: ...
 
@@ -23,6 +35,8 @@ class DistributedImpl(ABC):
 
 @dataclass
 class TorchDistributedImpl(DistributedImpl):
+    """基于 torch.distributed 的默认实现（单卡时直接返回原张量）。"""
+
     def all_reduce(self, x: torch.Tensor) -> torch.Tensor:
         tp_size = dist.get_world_size()
         if tp_size == 1:
@@ -34,6 +48,7 @@ class TorchDistributedImpl(DistributedImpl):
         tp_size = dist.get_world_size()
         if tp_size == 1:
             return x
+        # 沿第 0 维拼接各 rank 的张量
         shape = list(x.shape)
         shape[0] = shape[0] * tp_size
         out = torch.empty(shape, dtype=x.dtype, device=x.device)
@@ -43,6 +58,8 @@ class TorchDistributedImpl(DistributedImpl):
 
 @dataclass
 class PyNCCLDistributedImpl(DistributedImpl):
+    """基于 PyNCCL 内核的实现，内部维护一个通信器句柄。"""
+
     comm: PyNCCLCommunicator
 
     def all_reduce(self, x: torch.Tensor) -> torch.Tensor:
@@ -61,6 +78,8 @@ class PyNCCLDistributedImpl(DistributedImpl):
 
 
 class DistributedCommunicator:
+    """集合通信的门面：持有实现栈，始终委托给栈顶实现。"""
+
     plugins: List[DistributedImpl] = [TorchDistributedImpl()]
 
     def all_reduce(self, x: torch.Tensor) -> torch.Tensor:
@@ -73,9 +92,7 @@ class DistributedCommunicator:
 def enable_pynccl_distributed(
     tp_info: DistributedInfo, tp_cpu_group: torch.distributed.ProcessGroup, max_bytes: int
 ) -> None:
-    """
-    Enable PyNCCL-based distributed communication for tensor parallelism.
-    """
+    """启用 PyNCCL 通信：初始化通信器并压入插件栈。单卡无需启用。"""
     if tp_info.size == 1:
         return
     from minisgl.kernel import init_pynccl
@@ -91,7 +108,5 @@ def enable_pynccl_distributed(
 
 
 def destroy_distributed() -> None:
-    """
-    Destroy all the distributed communication plugins.
-    """
+    """清空所有通信插件（在释放 NCCL 资源后调用）。"""
     DistributedCommunicator.plugins = []

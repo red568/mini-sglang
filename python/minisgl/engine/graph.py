@@ -1,3 +1,10 @@
+"""GraphRunner：CUDA Graph 捕获与重放。
+
+为 decode 阶段（固定形状）预先捕获不同批大小的 CUDA Graph，运行时用
+`replay` 重放以降低 kernel 启动开销。decode batch 会被 padding 到最近的可
+捕获批大小，多余位置用 dummy 请求填充。
+"""
+
 from __future__ import annotations
 
 import gc
@@ -19,6 +26,12 @@ logger = init_logger(__name__)
 
 @dataclass
 class GraphCaptureBuffer:
+    """CUDA Graph 捕获/重放时复用的固定输入/输出 buffer。
+
+    CUDA Graph 要求输入输出地址固定，因此使用一块预分配 buffer，
+    重放前把 batch 数据拷入，重放后从 logits 中切片取有效部分。
+    """
+
     input_ids: torch.Tensor
     out_loc: torch.Tensor
     positions: torch.Tensor
@@ -34,12 +47,14 @@ class GraphCaptureBuffer:
         )
 
     def set_batch(self, batch: Batch) -> None:
+        """捕获阶段：让 batch 引用 buffer 中的固定地址。"""
         _slice = slice(batch.padded_size)
         batch.input_ids = self.input_ids[_slice]
         batch.out_loc = self.out_loc[_slice]
         batch.positions = self.positions[_slice]
 
     def copy_from(self, batch: Batch) -> None:
+        """重放阶段：把真实 batch 数据拷入 buffer。"""
         _slice = slice(batch.padded_size)
         self.input_ids[_slice] = batch.input_ids
         self.out_loc[_slice] = batch.out_loc
@@ -51,6 +66,7 @@ def _determine_cuda_graph_bs(
     cuda_graph_max_bs: int | None,
     free_memory: int,
 ) -> List[int]:
+    """确定要捕获的批大小列表：显式指定则直接使用，否则按显存估算上限。"""
     if cuda_graph_bs is not None:
         return cuda_graph_bs
 
@@ -64,6 +80,7 @@ def _determine_cuda_graph_bs(
     if cuda_graph_max_bs < 1:
         return []
 
+    # 小批用 [1,2,4]，其后按 8 递增
     return [1, 2, 4] + list(range(8, cuda_graph_max_bs + 1, 8))
 
 
@@ -72,6 +89,7 @@ def mem_GB(size: int) -> str:
 
 
 def get_free_memory(device: torch.device) -> int:
+    """返回当前设备的空闲显存字节数。"""
     return torch.cuda.mem_get_info(device)[0]
 
 
@@ -103,6 +121,7 @@ class GraphRunner:
         self._capture_graphs(max_seq_len, vocab_size, model)
 
     def _capture_graphs(self, max_seq_len: int, vocab_size: int, model: BaseLLMModel):
+        """为每个批大小捕获一个 CUDA Graph，存入 graph_map。"""
         self.graph_map: Dict[int, torch.cuda.CUDAGraph] = {}
         if self.max_graph_bs == 0:
             return logger.info_rank0("CUDA graph is disabled.")
@@ -131,11 +150,13 @@ class GraphRunner:
             pbar.desc = f"Capturing graphs: bs = {bs:<3} | avail_mem = {mem_GB(free_memory)}"
             pbar.refresh()
             graph = torch.cuda.CUDAGraph()
+            # 用 dummy 请求填满整个 batch 作为捕获模板
             batch = Batch(reqs=[self.dummy_req] * bs, phase="decode")
             batch.padded_reqs = batch.reqs
             self.attn_backend.prepare_for_capture(batch)
             self.buffer.set_batch(batch)
             with get_global_ctx().forward_batch(batch):
+                # 先真实执行一次 warmup，再捕获
                 self.buffer.logits[:bs] = model.forward()
                 with torch.cuda.graph(graph, pool=pool, stream=self.stream):
                     self.buffer.logits[:bs] = model.forward()
@@ -147,9 +168,11 @@ class GraphRunner:
         logger.info_rank0(f"Free GPU memory after capturing CUDA graphs: {mem_GB(free_memory)}")
 
     def can_use_cuda_graph(self, batch: Batch) -> bool:
+        """仅 decode 阶段且批大小不超过最大捕获大小时可重放。"""
         return batch.is_decode and batch.size <= self.max_graph_bs
 
     def replay(self, batch: Batch) -> torch.Tensor:
+        """把 batch 数据拷入固定 buffer 后重放对应大小的 CUDA Graph。"""
         assert self.can_use_cuda_graph(batch)
         self.buffer.copy_from(batch)
         g = self.graph_map[batch.padded_size]
@@ -158,6 +181,7 @@ class GraphRunner:
         return self.buffer.logits[: batch.size]
 
     def pad_batch(self, batch: Batch) -> None:
+        """将 batch padding 到最近的可捕获批大小（用 dummy 请求补足）。"""
         padded_size = (  # choose the first available batch size
             next(bs for bs in self.graph_bs_list if bs >= batch.size)
             if self.can_use_cuda_graph(batch)

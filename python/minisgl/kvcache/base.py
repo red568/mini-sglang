@@ -1,3 +1,10 @@
+"""KV Cache 相关的抽象接口与数据结构定义。
+
+- `BaseKVCachePool`：KV 存储池接口（按层存储/读取 K、V）。
+- `BasePrefixCache`：前缀缓存接口（匹配、插入、驱逐、加锁）。
+- 其余为支撑这些接口的轻量数据结构（句柄、大小信息、匹配/插入结果）。
+"""
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
@@ -39,6 +46,8 @@ class BaseKVCachePool(ABC):
 
 @dataclass(frozen=True)
 class BaseCacheHandle(ABC):
+    """前缀缓存句柄：记录命中长度，并可按需返回命中的索引。"""
+
     cached_len: int
 
     @abstractmethod
@@ -46,6 +55,8 @@ class BaseCacheHandle(ABC):
 
 
 class SizeInfo(NamedTuple):
+    """缓存大小统计：可驱逐 + 受保护（已加锁）两部分。"""
+
     evictable_size: int
     protected_size: int
 
@@ -55,11 +66,19 @@ class SizeInfo(NamedTuple):
 
 
 class InsertResult(NamedTuple):
+    """插入前缀的结果。
+
+    - `cached_len`：插入前已存在于缓存中的长度（这部分应被调用方释放）。
+    - `handle`：插入后新前缀对应的句柄。
+    """
+
     cached_len: int  # length already in cache before insertion (should be freed)
     handle: BaseCacheHandle  # cache handle for the inserted prefix
 
 
 class MatchResult(NamedTuple):
+    """前缀匹配的结果，当前仅含 CUDA 侧句柄。"""
+
     cuda_handle: BaseCacheHandle
     # TODO: support HiCache
 
